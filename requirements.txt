@@ -1,0 +1,6 @@
+aiogram>=3.26,<4
+Kurigram>=2.2.19,<3
+TgCrypto>=1.2.5,<2
+py-tgcalls>=2.2.11,<3
+python-dotenv>=1.1,<2
+yt-dlp>=2026.7.4
