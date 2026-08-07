@@ -9,7 +9,6 @@ from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot.i18n import LanguageStore
-from bot.permissions import has_playback_permission
 from bot.errors import AssistantJoinError
 
 if TYPE_CHECKING:
@@ -34,20 +33,6 @@ def language_keyboard(store: LanguageStore, user_id: int) -> InlineKeyboardMarku
         [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang:en")],
         [InlineKeyboardButton(text=store.text(user_id, "back"), callback_data="home")],
     ])
-
-
-async def _is_admin(message: Message) -> bool:
-    if not message.from_user:
-        return False
-    member = await message.bot.get_chat_member(message.chat.id, message.from_user.id)
-    return has_playback_permission(member)
-
-
-async def _require_admin(message: Message, store: LanguageStore) -> bool:
-    if await _is_admin(message):
-        return True
-    await message.answer(store.text(message.from_user.id if message.from_user else None, "denied"))
-    return False
 
 
 @router.message(CommandStart())
@@ -131,8 +116,6 @@ async def bot_joined(message: Message, language_store: LanguageStore) -> None:
 
 async def _play(message: Message, command: CommandObject, player: Player, store: LanguageStore, *, video: bool) -> None:
     user_id = message.from_user.id if message.from_user else None
-    if not await _require_admin(message, store):
-        return
     query = (command.args or "").strip().strip('"')
     command_name = "vplay" if video else "play"
     if not query:
@@ -171,29 +154,24 @@ async def play_video(message: Message, command: CommandObject, player: Player, l
 
 @router.message(Command("pause"), GROUPS)
 async def pause(message: Message, player: Player, language_store: LanguageStore) -> None:
-    if await _require_admin(message, language_store):
-        changed = await player.pause(message.chat.id)
-        await message.answer(language_store.text(message.from_user.id, "paused" if changed else "nothing"))
+    changed = await player.pause(message.chat.id)
+    await message.answer(language_store.text(message.from_user.id, "paused" if changed else "nothing"))
 
 
 @router.message(Command("resume"), GROUPS)
 async def resume(message: Message, player: Player, language_store: LanguageStore) -> None:
-    if await _require_admin(message, language_store):
-        changed = await player.resume(message.chat.id)
-        await message.answer(language_store.text(message.from_user.id, "resumed" if changed else "nothing"))
+    changed = await player.resume(message.chat.id)
+    await message.answer(language_store.text(message.from_user.id, "resumed" if changed else "nothing"))
 
 
 @router.message(Command("stop"), GROUPS)
 async def stop(message: Message, player: Player, language_store: LanguageStore) -> None:
-    if await _require_admin(message, language_store):
-        changed = await player.leave(message.chat.id)
-        await message.answer(language_store.text(message.from_user.id, "stopped" if changed else "nothing"))
+    changed = await player.leave(message.chat.id)
+    await message.answer(language_store.text(message.from_user.id, "stopped" if changed else "nothing"))
 
 
 @router.message(Command("skip"), GROUPS)
 async def skip(message: Message, player: Player, language_store: LanguageStore) -> None:
-    if not await _require_admin(message, language_store):
-        return
     item = await player.skip(message.chat.id)
     if item:
         await message.answer(language_store.text(message.from_user.id, "skipped", title=html.quote(item.media.title)))
