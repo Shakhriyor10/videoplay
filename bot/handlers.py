@@ -10,6 +10,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from bot.i18n import LanguageStore
 from bot.permissions import has_playback_permission
+from bot.errors import AssistantJoinError
 
 if TYPE_CHECKING:
     from bot.player import Player
@@ -55,7 +56,11 @@ async def start(message: Message, language_store: LanguageStore) -> None:
     if message.chat.type == ChatType.PRIVATE:
         me = await message.bot.get_me()
         await message.answer(
-            language_store.text(user_id, "start"),
+            language_store.text(
+                user_id,
+                "start",
+                name=html.quote(message.from_user.full_name if message.from_user else "do'stim"),
+            ),
             reply_markup=start_keyboard(me.username or "", language_store.get(user_id), language_store, user_id),
         )
     else:
@@ -93,7 +98,11 @@ async def select_language(query: CallbackQuery, language_store: LanguageStore) -
     if query.message:
         me = await query.bot.get_me()
         await query.message.edit_text(
-            language_store.text(query.from_user.id, "start"),
+            language_store.text(
+                query.from_user.id,
+                "start",
+                name=html.quote(query.from_user.full_name),
+            ),
             reply_markup=start_keyboard(me.username or "", language_store.get(query.from_user.id), language_store, query.from_user.id),
         )
 
@@ -104,7 +113,11 @@ async def home(query: CallbackQuery, language_store: LanguageStore) -> None:
     if query.message:
         me = await query.bot.get_me()
         await query.message.edit_text(
-            language_store.text(query.from_user.id, "start"),
+            language_store.text(
+                query.from_user.id,
+                "start",
+                name=html.quote(query.from_user.full_name),
+            ),
             reply_markup=start_keyboard(me.username or "", language_store.get(query.from_user.id), language_store, query.from_user.id),
         )
 
@@ -127,12 +140,20 @@ async def _play(message: Message, command: CommandObject, player: Player, store:
         return
     status = await message.answer(store.text(user_id, "searching", query=html.quote(query)))
     try:
+        joined = await player.ensure_assistant(message.bot, message.chat.id)
+        if joined:
+            await status.edit_text(store.text(user_id, "assistant_joined"))
         result = await player.enqueue(message.chat.id, query, video=video)
         key = "playing" if result.started else "queued"
         await status.edit_text(store.text(
             user_id, key, icon="🎬" if video else "🎵",
             title=html.quote(result.item.media.title), position=result.position,
         ))
+    except AssistantJoinError as error:
+        logger.exception("Assistant join failed in chat %s", message.chat.id)
+        await status.edit_text(
+            store.text(user_id, "assistant_join_failed", reason=html.quote(str(error)))
+        )
     except Exception:
         logger.exception("Playback failed in chat %s", message.chat.id)
         await status.edit_text(store.text(user_id, "failed"))
@@ -143,7 +164,7 @@ async def play_audio(message: Message, command: CommandObject, player: Player, l
     await _play(message, command, player, language_store, video=False)
 
 
-@router.message(Command("vplay"), GROUPS)
+@router.message(Command("vplay", "video"), GROUPS)
 async def play_video(message: Message, command: CommandObject, player: Player, language_store: LanguageStore) -> None:
     await _play(message, command, player, language_store, video=True)
 

@@ -35,6 +35,7 @@ async def main() -> None:
         await bot.set_my_commands([
             BotCommand(command="play", description="🎵 Play music"),
             BotCommand(command="vplay", description="🎬 Play video"),
+            BotCommand(command="video", description="🎬 Play video"),
             BotCommand(command="skip", description="⏭ Next track"),
             BotCommand(command="pause", description="⏸ Pause"),
             BotCommand(command="resume", description="▶️ Resume"),

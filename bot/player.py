@@ -2,12 +2,15 @@ import logging
 from asyncio import Lock
 from collections import defaultdict, deque
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from pyrogram import Client
 from pytgcalls import PyTgCalls, filters
 from pytgcalls.types import StreamEnded
 
 from bot.config import Settings
+from bot.errors import AssistantJoinError
 from bot.media import Media, find_media
 
 logger = logging.getLogger(__name__)
@@ -41,6 +44,7 @@ class Player:
         self.current: dict[int, QueueItem] = {}
         self.queues: dict[int, deque[QueueItem]] = defaultdict(deque)
         self.locks: dict[int, Lock] = defaultdict(Lock)
+        self.assistant_locks: dict[int, Lock] = defaultdict(Lock)
         self.calls.on_update(filters.stream_end(StreamEnded.Type.AUDIO))(
             self._on_stream_end
         )
@@ -61,6 +65,71 @@ class Player:
                 self.assistant_username,
                 account.username,
             )
+
+    async def ensure_assistant(self, bot: Any, chat_id: int) -> bool:
+        """Join the assistant through a temporary one-use invite when necessary."""
+        async with self.assistant_locks[chat_id]:
+            try:
+                bot_info = await bot.get_me()
+                bot_member = await bot.get_chat_member(chat_id, bot_info.id)
+                if not getattr(bot_member, "can_invite_users", False):
+                    raise AssistantJoinError(
+                        "Боту требуется право приглашать пользователей."
+                    )
+
+                try:
+                    member = await bot.get_chat_member(chat_id, self.assistant_user_id)
+                    status = getattr(member.status, "value", member.status)
+                except Exception:
+                    status = "left"
+                if status in {"member", "administrator", "creator", "restricted"}:
+                    return False
+
+                if status == "kicked":
+                    await bot.unban_chat_member(
+                        chat_id,
+                        self.assistant_user_id,
+                        only_if_banned=True,
+                    )
+
+                invite = await bot.create_chat_invite_link(
+                    chat_id=chat_id,
+                    name="VideoPlay assistant",
+                    expire_date=datetime.now(timezone.utc) + timedelta(minutes=2),
+                    member_limit=1,
+                )
+                try:
+                    await self.client.join_chat(invite.invite_link)
+                finally:
+                    try:
+                        await bot.revoke_chat_invite_link(chat_id, invite.invite_link)
+                    except Exception:
+                        logger.warning(
+                            "Could not revoke assistant invite in chat %s",
+                            chat_id,
+                            exc_info=True,
+                        )
+
+                if getattr(bot_member, "can_promote_members", False):
+                    try:
+                        await bot.promote_chat_member(
+                            chat_id=chat_id,
+                            user_id=self.assistant_user_id,
+                            can_manage_video_chats=True,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Assistant joined chat %s but could not be promoted",
+                            chat_id,
+                            exc_info=True,
+                        )
+                return True
+            except AssistantJoinError:
+                raise
+            except Exception as error:
+                raise AssistantJoinError(
+                    "Не удалось автоматически добавить аккаунт-ассистент."
+                ) from error
 
     async def enqueue(self, chat_id: int, query: str, *, video: bool) -> EnqueueResult:
         media = await find_media(query, video=video)
