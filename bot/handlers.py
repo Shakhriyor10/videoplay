@@ -133,6 +133,7 @@ async def _play(message: Message, command: CommandObject, player: Player, store:
         joined = await player.ensure_assistant(message.bot, message.chat.id)
         if joined:
             await status.edit_text(store.text(user_id, "assistant_joined"))
+        await status.edit_text(store.text(user_id, "preparing"))
         result = await player.enqueue_resolved(message.chat.id, media, video=video)
         key = "playing" if result.started else "queued"
         await status.edit_text(store.text(

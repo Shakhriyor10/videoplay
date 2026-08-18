@@ -12,7 +12,7 @@ from pytgcalls.types import MediaStream, StreamEnded
 
 from bot.config import Settings
 from bot.errors import AssistantJoinError, PlaybackError
-from bot.media import Media, find_media
+from bot.media import Media, cleanup_media, find_media, prepare_media
 
 logger = logging.getLogger(__name__)
 
@@ -137,9 +137,10 @@ class Player:
 
     @staticmethod
     def _stream(item: QueueItem) -> MediaStream:
+        source = item.media.local_path or item.media.stream_url
         return MediaStream(
-            item.media.stream_url,
-            headers=item.media.headers or None,
+            source,
+            headers=None if item.media.local_path else (item.media.headers or None),
             video_flags=(
                 MediaStream.Flags.AUTO_DETECT
                 if item.video
@@ -157,12 +158,15 @@ class Player:
         item = QueueItem(media=media, video=video)
         async with self.locks[chat_id]:
             if chat_id not in self.current:
+                item.media = await prepare_media(item.media, video=item.video)
                 try:
                     async with asyncio.timeout(40):
                         await self.calls.play(chat_id, self._stream(item))
                 except TimeoutError as error:
+                    cleanup_media(item.media)
                     raise PlaybackError("Подключение к видеочату превысило 40 секунд") from error
                 except Exception as error:
+                    cleanup_media(item.media)
                     raise PlaybackError("Не удалось подключиться к активному видеочату") from error
                 self.current[chat_id] = item
                 return EnqueueResult(item, True, 0)
@@ -172,13 +176,21 @@ class Player:
     async def _advance(self, chat_id: int) -> QueueItem | None:
         async with self.locks[chat_id]:
             if self.queues[chat_id]:
+                previous = self.current.get(chat_id)
                 item = self.queues[chat_id].popleft()
-                # Provider stream URLs expire quickly. Resolve a fresh URL before playback.
+                # Resolve and download a fresh local copy immediately before playback.
                 item.media = await find_media(item.media.webpage_url, video=item.video)
-                await self.calls.play(chat_id, self._stream(item))
+                item.media = await prepare_media(item.media, video=item.video)
+                try:
+                    await self.calls.play(chat_id, self._stream(item))
+                except Exception:
+                    cleanup_media(item.media)
+                    raise
                 self.current[chat_id] = item
+                cleanup_media(previous.media if previous else None)
                 return item
-            self.current.pop(chat_id, None)
+            previous = self.current.pop(chat_id, None)
+            cleanup_media(previous.media if previous else None)
             return None
 
     async def _on_stream_end(self, _client: PyTgCalls, update: StreamEnded) -> None:
@@ -212,7 +224,10 @@ class Player:
 
     async def leave(self, chat_id: int) -> bool:
         active = chat_id in self.current
-        self.current.pop(chat_id, None)
+        current = self.current.pop(chat_id, None)
+        cleanup_media(current.media if current else None)
+        for item in self.queues[chat_id]:
+            cleanup_media(item.media)
         self.queues[chat_id].clear()
         if not active:
             return False
@@ -225,6 +240,7 @@ class Player:
                 await self.calls.leave_call(chat_id)
             except Exception:
                 logger.debug("Could not leave chat %s during shutdown", chat_id, exc_info=True)
+            cleanup_media(self.current[chat_id].media)
         self.current.clear()
         self.queues.clear()
         if self.client.is_connected:
