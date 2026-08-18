@@ -34,6 +34,9 @@ def _source(query: str, provider: str) -> str:
 
 
 def _common_command_options(command: list[str]) -> None:
+    # Allow yt-dlp to keep its official YouTube JS challenge solver current.
+    command.extend(["--remote-components", "ejs:github"])
+
     cookie_file = os.getenv("YTDLP_COOKIE_FILE", "").strip()
     if cookie_file:
         command.extend(["--cookies", cookie_file])

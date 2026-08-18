@@ -71,6 +71,10 @@ sudo docker restart bgutil-provider
 sudo systemctl restart videoplay.service
 ```
 
+Пакет устанавливается как `yt-dlp[default]`, поэтому официальный EJS challenge
+solver устанавливается и обновляется вместе с `yt-dlp`. Бот также разрешает
+автоматическое получение актуального EJS-компонента с GitHub.
+
 Бот использует YouTube с PO Token, а при отказе YouTube команда `/play`
 автоматически ищет тот же трек в SoundCloud. Для `/vplay` SoundCloud не применяется,
 поскольку нужен видеопоток.
