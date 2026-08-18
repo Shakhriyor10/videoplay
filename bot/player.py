@@ -11,8 +11,8 @@ from pytgcalls import PyTgCalls, filters
 from pytgcalls.types import MediaStream, StreamEnded
 
 from bot.config import Settings
-from bot.errors import AssistantJoinError, MediaSearchError, PlaybackError
-from bot.media import Media, cleanup_media, find_media, prepare_media
+from bot.errors import AssistantJoinError, PlaybackError
+from bot.media import Media, find_media
 
 logger = logging.getLogger(__name__)
 
@@ -133,42 +133,13 @@ class Player:
                 ) from error
 
     async def resolve(self, query: str, *, video: bool) -> Media:
-        try:
-            return await find_media(query, video=video)
-        except MediaSearchError:
-            if video or query.startswith(("http://", "https://")):
-                raise
-            logger.warning(
-                "YouTube search failed for %r; trying SoundCloud",
-                query,
-                exc_info=True,
-            )
-            return await find_media(query, video=False, provider="soundcloud")
-
-    async def _prepare(self, media: Media, *, video: bool) -> Media:
-        try:
-            return await prepare_media(media, video=video)
-        except MediaSearchError:
-            if video:
-                raise
-            logger.warning(
-                "Primary source failed for %r; trying SoundCloud",
-                media.title,
-                exc_info=True,
-            )
-            fallback = await find_media(
-                media.title,
-                video=False,
-                provider="soundcloud",
-            )
-            return await prepare_media(fallback, video=False)
+        return await find_media(query, video=video)
 
     @staticmethod
     def _stream(item: QueueItem) -> MediaStream:
-        source = item.media.local_path or item.media.stream_url
         return MediaStream(
-            source,
-            headers=None if item.media.local_path else (item.media.headers or None),
+            item.media.stream_url,
+            headers=item.media.headers or None,
             video_flags=(
                 MediaStream.Flags.AUTO_DETECT
                 if item.video
@@ -186,15 +157,12 @@ class Player:
         item = QueueItem(media=media, video=video)
         async with self.locks[chat_id]:
             if chat_id not in self.current:
-                item.media = await self._prepare(item.media, video=item.video)
                 try:
                     async with asyncio.timeout(40):
                         await self.calls.play(chat_id, self._stream(item))
                 except TimeoutError as error:
-                    cleanup_media(item.media)
                     raise PlaybackError("Подключение к видеочату превысило 40 секунд") from error
                 except Exception as error:
-                    cleanup_media(item.media)
                     raise PlaybackError("Не удалось подключиться к активному видеочату") from error
                 self.current[chat_id] = item
                 return EnqueueResult(item, True, 0)
@@ -204,21 +172,13 @@ class Player:
     async def _advance(self, chat_id: int) -> QueueItem | None:
         async with self.locks[chat_id]:
             if self.queues[chat_id]:
-                previous = self.current.get(chat_id)
                 item = self.queues[chat_id].popleft()
-                # Resolve and download a fresh local copy immediately before playback.
+                # Provider stream URLs expire quickly. Resolve a fresh URL before playback.
                 item.media = await find_media(item.media.webpage_url, video=item.video)
-                item.media = await self._prepare(item.media, video=item.video)
-                try:
-                    await self.calls.play(chat_id, self._stream(item))
-                except Exception:
-                    cleanup_media(item.media)
-                    raise
+                await self.calls.play(chat_id, self._stream(item))
                 self.current[chat_id] = item
-                cleanup_media(previous.media if previous else None)
                 return item
-            previous = self.current.pop(chat_id, None)
-            cleanup_media(previous.media if previous else None)
+            self.current.pop(chat_id, None)
             return None
 
     async def _on_stream_end(self, _client: PyTgCalls, update: StreamEnded) -> None:
@@ -252,10 +212,7 @@ class Player:
 
     async def leave(self, chat_id: int) -> bool:
         active = chat_id in self.current
-        current = self.current.pop(chat_id, None)
-        cleanup_media(current.media if current else None)
-        for item in self.queues[chat_id]:
-            cleanup_media(item.media)
+        self.current.pop(chat_id, None)
         self.queues[chat_id].clear()
         if not active:
             return False
@@ -268,7 +225,6 @@ class Player:
                 await self.calls.leave_call(chat_id)
             except Exception:
                 logger.debug("Could not leave chat %s during shutdown", chat_id, exc_info=True)
-            cleanup_media(self.current[chat_id].media)
         self.current.clear()
         self.queues.clear()
         if self.client.is_connected:
