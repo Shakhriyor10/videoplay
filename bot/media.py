@@ -104,8 +104,20 @@ def _extract(query: str, video: bool) -> Media:
     )
 
 
-async def find_media(query: str, *, video: bool, provider: str = "youtube") -> Media:
-    source = _source(query, provider)
+def _media_from_info(info: dict, fallback_title: str) -> Media:
+    stream_url = info.get("url")
+    if not stream_url:
+        raise MediaSearchError("source did not return a playable stream")
+    return Media(
+        title=info.get("title") or fallback_title,
+        webpage_url=info.get("webpage_url") or fallback_title,
+        stream_url=stream_url,
+        duration=info.get("duration"),
+        headers={str(key): str(value) for key, value in (info.get("http_headers") or {}).items()},
+    )
+
+
+async def _extract_info(source: str, *, video: bool, flat: bool = False) -> dict:
     media_format = (
         "best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best"
         if video
@@ -117,8 +129,6 @@ async def find_media(query: str, *, video: bool, provider: str = "youtube") -> M
         "yt_dlp",
         "--quiet",
         "--no-warnings",
-        "--no-playlist",
-        "--ignore-errors",
         "--skip-download",
         "--no-cache-dir",
         "--socket-timeout",
@@ -127,10 +137,12 @@ async def find_media(query: str, *, video: bool, provider: str = "youtube") -> M
         "2",
         "--extractor-retries",
         "2",
-        "--format",
-        media_format,
         "--dump-single-json",
     ]
+    if flat:
+        command.extend(["--flat-playlist", "--playlist-end", "5"])
+    else:
+        command.extend(["--no-playlist", "--format", media_format])
     _common_command_options(command)
     command.append(source)
 
@@ -151,28 +163,40 @@ async def find_media(query: str, *, video: bool, provider: str = "youtube") -> M
         detail = stderr.decode("utf-8", errors="replace").strip().splitlines()
         if detail:
             logger.warning("yt-dlp subprocess failed: %s", detail[-1])
-        raise MediaSearchError(f"{provider} source failed")
+        raise MediaSearchError("source extraction failed")
 
     try:
-        info = json.loads(stdout.decode("utf-8"))
+        return json.loads(stdout.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise MediaSearchError("Источник вернул некорректный ответ") from error
 
-    if "entries" in info:
-        entries = [entry for entry in info["entries"] if entry]
-        if not entries:
-            raise MediaNotFoundError("По этому запросу ничего не найдено")
-        info = entries[0]
-    stream_url = info.get("url")
-    if not stream_url:
-        raise MediaSearchError("Источник не предоставил ссылку на поток")
-    return Media(
-        title=info.get("title") or query,
-        webpage_url=info.get("webpage_url") or query,
-        stream_url=stream_url,
-        duration=info.get("duration"),
-        headers={str(key): str(value) for key, value in (info.get("http_headers") or {}).items()},
-    )
+
+async def find_media(query: str, *, video: bool, provider: str = "youtube") -> Media:
+    if query.startswith(("http://", "https://")):
+        return _media_from_info(
+            await _extract_info(query, video=video),
+            query,
+        )
+
+    search = await _extract_info(_source(query, provider), video=video, flat=True)
+    entries = [entry for entry in search.get("entries", []) if entry]
+    if not entries:
+        raise MediaNotFoundError("По этому запросу ничего не найдено")
+
+    for entry in entries:
+        candidate = entry.get("webpage_url") or entry.get("url") or entry.get("id")
+        if not candidate:
+            continue
+        candidate = str(candidate)
+        if provider == "youtube" and not candidate.startswith(("http://", "https://")):
+            candidate = f"https://www.youtube.com/watch?v={candidate}"
+        try:
+            info = await _extract_info(candidate, video=video)
+            return _media_from_info(info, entry.get("title") or query)
+        except MediaSearchError:
+            logger.info("Skipping unavailable %s candidate %s", provider, candidate)
+
+    raise MediaSearchError(f"no playable {provider} candidates")
 
 
 async def prepare_media(media: Media, *, video: bool) -> Media:
