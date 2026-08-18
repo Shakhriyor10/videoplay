@@ -29,7 +29,10 @@ class Media:
 def _source(query: str, provider: str) -> str:
     if query.startswith(("http://", "https://")):
         return query
-    prefix = "scsearch1" if provider == "soundcloud" else "ytsearch1"
+    # The first search hit is often deleted, geo-blocked or members-only.
+    # Ask for several candidates; the extraction command ignores broken entries
+    # and we select the first playable one below.
+    prefix = "scsearch5" if provider == "soundcloud" else "ytsearch5"
     return f"{prefix}:{query}"
 
 
@@ -115,6 +118,7 @@ async def find_media(query: str, *, video: bool, provider: str = "youtube") -> M
         "--quiet",
         "--no-warnings",
         "--no-playlist",
+        "--ignore-errors",
         "--skip-download",
         "--no-cache-dir",
         "--socket-timeout",
