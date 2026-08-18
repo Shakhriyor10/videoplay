@@ -9,7 +9,12 @@ from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot.i18n import LanguageStore
-from bot.errors import AssistantJoinError
+from bot.errors import (
+    AssistantJoinError,
+    MediaNotFoundError,
+    MediaSearchError,
+    PlaybackError,
+)
 
 if TYPE_CHECKING:
     from bot.player import Player
@@ -123,10 +128,12 @@ async def _play(message: Message, command: CommandObject, player: Player, store:
         return
     status = await message.answer(store.text(user_id, "searching", query=html.quote(query)))
     try:
+        # Search first: do not invite the assistant for an invalid/blocked query.
+        media = await player.resolve(query, video=video)
         joined = await player.ensure_assistant(message.bot, message.chat.id)
         if joined:
             await status.edit_text(store.text(user_id, "assistant_joined"))
-        result = await player.enqueue(message.chat.id, query, video=video)
+        result = await player.enqueue_resolved(message.chat.id, media, video=video)
         key = "playing" if result.started else "queued"
         await status.edit_text(store.text(
             user_id, key, icon="🎬" if video else "🎵",
@@ -136,6 +143,19 @@ async def _play(message: Message, command: CommandObject, player: Player, store:
         logger.exception("Assistant join failed in chat %s", message.chat.id)
         await status.edit_text(
             store.text(user_id, "assistant_join_failed", reason=html.quote(str(error)))
+        )
+    except MediaNotFoundError:
+        logger.info("Media was not found in chat %s for query %r", message.chat.id, query)
+        await status.edit_text(store.text(user_id, "not_found"))
+    except MediaSearchError as error:
+        logger.warning("Media search failed in chat %s: %s", message.chat.id, error)
+        await status.edit_text(
+            store.text(user_id, "search_failed", reason=html.quote(str(error)))
+        )
+    except PlaybackError as error:
+        logger.exception("Voice-chat playback failed in chat %s", message.chat.id)
+        await status.edit_text(
+            store.text(user_id, "playback_failed", reason=html.quote(str(error)))
         )
     except Exception:
         logger.exception("Playback failed in chat %s", message.chat.id)

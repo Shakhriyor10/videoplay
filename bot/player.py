@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from asyncio import Lock
 from collections import defaultdict, deque
 from dataclasses import dataclass
@@ -7,10 +8,10 @@ from typing import Any
 
 from pyrogram import Client
 from pytgcalls import PyTgCalls, filters
-from pytgcalls.types import StreamEnded
+from pytgcalls.types import MediaStream, StreamEnded
 
 from bot.config import Settings
-from bot.errors import AssistantJoinError
+from bot.errors import AssistantJoinError, PlaybackError
 from bot.media import Media, find_media
 
 logger = logging.getLogger(__name__)
@@ -53,7 +54,7 @@ class Player:
         await self.calls.start()
         account = await self.client.get_me()
         if account.id != self.assistant_user_id:
-            await self.calls.stop()
+            await self.client.stop()
             raise RuntimeError(
                 "SESSION_STRING принадлежит другому аккаунту: "
                 f"ожидался ID {self.assistant_user_id}, получен {account.id}"
@@ -131,12 +132,38 @@ class Player:
                     "Не удалось автоматически добавить аккаунт-ассистент."
                 ) from error
 
-    async def enqueue(self, chat_id: int, query: str, *, video: bool) -> EnqueueResult:
-        media = await find_media(query, video=video)
+    async def resolve(self, query: str, *, video: bool) -> Media:
+        return await find_media(query, video=video)
+
+    @staticmethod
+    def _stream(item: QueueItem) -> MediaStream:
+        return MediaStream(
+            item.media.stream_url,
+            headers=item.media.headers or None,
+            video_flags=(
+                MediaStream.Flags.AUTO_DETECT
+                if item.video
+                else MediaStream.Flags.IGNORE
+            ),
+        )
+
+    async def enqueue_resolved(
+        self,
+        chat_id: int,
+        media: Media,
+        *,
+        video: bool,
+    ) -> EnqueueResult:
         item = QueueItem(media=media, video=video)
         async with self.locks[chat_id]:
             if chat_id not in self.current:
-                await self.calls.play(chat_id, media.stream_url)
+                try:
+                    async with asyncio.timeout(40):
+                        await self.calls.play(chat_id, self._stream(item))
+                except TimeoutError as error:
+                    raise PlaybackError("Подключение к видеочату превысило 40 секунд") from error
+                except Exception as error:
+                    raise PlaybackError("Не удалось подключиться к активному видеочату") from error
                 self.current[chat_id] = item
                 return EnqueueResult(item, True, 0)
             self.queues[chat_id].append(item)
@@ -146,7 +173,9 @@ class Player:
         async with self.locks[chat_id]:
             if self.queues[chat_id]:
                 item = self.queues[chat_id].popleft()
-                await self.calls.play(chat_id, item.media.stream_url)
+                # Provider stream URLs expire quickly. Resolve a fresh URL before playback.
+                item.media = await find_media(item.media.webpage_url, video=item.video)
+                await self.calls.play(chat_id, self._stream(item))
                 self.current[chat_id] = item
                 return item
             self.current.pop(chat_id, None)
@@ -191,4 +220,12 @@ class Player:
         return True
 
     async def stop_all(self) -> None:
-        await self.calls.stop()
+        for chat_id in list(self.current):
+            try:
+                await self.calls.leave_call(chat_id)
+            except Exception:
+                logger.debug("Could not leave chat %s during shutdown", chat_id, exc_info=True)
+        self.current.clear()
+        self.queues.clear()
+        if self.client.is_connected:
+            await self.client.stop()
