@@ -150,9 +150,7 @@ async def _play(message: Message, command: CommandObject, player: Player, store:
         await status.edit_text(store.text(user_id, "not_found"))
     except MediaSearchError as error:
         logger.warning("Media search failed in chat %s: %s", message.chat.id, error)
-        await status.edit_text(
-            store.text(user_id, "search_failed", reason=html.quote(str(error)))
-        )
+        await status.edit_text(store.text(user_id, "search_failed"))
     except PlaybackError as error:
         logger.exception("Voice-chat playback failed in chat %s", message.chat.id)
         await status.edit_text(

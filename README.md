@@ -46,8 +46,38 @@ ASSISTANT_USERNAME=skroozy6
 ### Ограничения YouTube на VPS
 
 Если журнал содержит `HTTP Error 403` или `Sign in to confirm you're not a bot`,
-YouTube ограничил IP сервера. Экспортируйте cookies отдельного тестового YouTube-аккаунта
-в Netscape-формате, сохраните их вне Git как `/var/www/videoplay/cookies.txt` и добавьте:
+YouTube требует PO Token для серверной загрузки. Рекомендуемый вариант — запустить
+локальный provider (порт наружу публиковать не нужно):
+
+```bash
+sudo docker run --name bgutil-provider --restart unless-stopped \
+  -d --init -p 127.0.0.1:4416:4416 \
+  brainicism/bgutil-ytdlp-pot-provider:1.3.1
+```
+
+Затем добавьте в `/var/www/videoplay/.env`:
+
+```env
+YTDLP_POT_PROVIDER_URL=http://127.0.0.1:4416
+```
+
+Обновите зависимости и перезапустите оба сервиса:
+
+```bash
+cd /var/www/videoplay
+source .venv/bin/activate
+python -m pip install -U -r requirements.txt
+sudo docker restart bgutil-provider
+sudo systemctl restart videoplay.service
+```
+
+Бот использует YouTube с PO Token, а при отказе YouTube команда `/play`
+автоматически ищет тот же трек в SoundCloud. Для `/vplay` SoundCloud не применяется,
+поскольку нужен видеопоток.
+
+Cookies нужны только для возрастных или закрытых роликов. Если это необходимо,
+экспортируйте cookies отдельного тестового YouTube-аккаунта в Netscape-формате,
+сохраните их вне Git как `/var/www/videoplay/cookies.txt` и добавьте:
 
 ```env
 YTDLP_COOKIE_FILE=/var/www/videoplay/cookies.txt

@@ -26,8 +26,28 @@ class Media:
     local_path: str | None = None
 
 
+def _source(query: str, provider: str) -> str:
+    if query.startswith(("http://", "https://")):
+        return query
+    prefix = "scsearch1" if provider == "soundcloud" else "ytsearch1"
+    return f"{prefix}:{query}"
+
+
+def _common_command_options(command: list[str]) -> None:
+    cookie_file = os.getenv("YTDLP_COOKIE_FILE", "").strip()
+    if cookie_file:
+        command.extend(["--cookies", cookie_file])
+
+    provider_url = os.getenv("YTDLP_POT_PROVIDER_URL", "").strip().rstrip("/")
+    if provider_url:
+        command.extend([
+            "--extractor-args", "youtube:player_client=mweb",
+            "--extractor-args", f"youtubepot-bgutilhttp:base_url={provider_url}",
+        ])
+
+
 def _extract(query: str, video: bool) -> Media:
-    source = query if query.startswith(("http://", "https://")) else f"ytsearch1:{query}"
+    source = _source(query, "youtube")
     options = {
         "quiet": True,
         "no_warnings": True,
@@ -78,8 +98,8 @@ def _extract(query: str, video: bool) -> Media:
     )
 
 
-async def find_media(query: str, *, video: bool) -> Media:
-    source = query if query.startswith(("http://", "https://")) else f"ytsearch1:{query}"
+async def find_media(query: str, *, video: bool, provider: str = "youtube") -> Media:
+    source = _source(query, provider)
     media_format = (
         "best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best"
         if video
@@ -104,9 +124,7 @@ async def find_media(query: str, *, video: bool) -> Media:
         media_format,
         "--dump-single-json",
     ]
-    cookie_file = os.getenv("YTDLP_COOKIE_FILE", "").strip()
-    if cookie_file:
-        command.extend(["--cookies", cookie_file])
+    _common_command_options(command)
     command.append(source)
 
     process = await asyncio.create_subprocess_exec(
@@ -126,7 +144,7 @@ async def find_media(query: str, *, video: bool) -> Media:
         detail = stderr.decode("utf-8", errors="replace").strip().splitlines()
         if detail:
             logger.warning("yt-dlp subprocess failed: %s", detail[-1])
-        raise MediaSearchError("YouTube не ответил или ограничил сервер")
+        raise MediaSearchError(f"{provider} source failed")
 
     try:
         info = json.loads(stdout.decode("utf-8"))
@@ -181,9 +199,7 @@ async def prepare_media(media: Media, *, video: bool) -> Media:
         "--print",
         "after_move:filepath",
     ]
-    cookie_file = os.getenv("YTDLP_COOKIE_FILE", "").strip()
-    if cookie_file:
-        command.extend(["--cookies", cookie_file])
+    _common_command_options(command)
     command.append(media.webpage_url)
 
     process = await asyncio.create_subprocess_exec(
@@ -203,7 +219,7 @@ async def prepare_media(media: Media, *, video: bool) -> Media:
         detail = stderr.decode("utf-8", errors="replace").strip().splitlines()
         if detail:
             logger.warning("yt-dlp download failed: %s", detail[-1])
-        raise MediaSearchError("YouTube не разрешил загрузить выбранный поток")
+        raise MediaSearchError("media download was rejected by source")
 
     paths = [Path(line.strip()) for line in stdout.decode("utf-8", errors="replace").splitlines() if line.strip()]
     local_path = next((path for path in reversed(paths) if path.is_file()), None)
